@@ -7,10 +7,13 @@ import {
   DataLine, ArrowLeft, ArrowRight
 } from '@element-plus/icons-vue'
 import { getHistoryList, submitFeedback } from '@/api/recognize'
+import { resolveImageUrl } from '@/utils/imageUrl'
+import { useRecognizeStore } from '@/stores/recognize'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 
 const router = useRouter()
+const recStore = useRecognizeStore()
 
 // ============ 列表数据 ============
 const loading = ref(false)
@@ -35,6 +38,14 @@ function previewImage(url) {
   imageViewerVisible.value = true
 }
 
+// 缩略图加载失败时隐藏图片，显示占位符
+function onThumbError(e, item) {
+  // 阻止重复触发
+  if (item._thumbFailed) return
+  item._thumbFailed = true
+  item.imageUrl = ''
+}
+
 // ============ LaTeX 预渲染 ============
 function renderLatexToString(latex) {
   if (!latex) return ''
@@ -49,33 +60,55 @@ function renderLatexToString(latex) {
   }
 }
 
+// 把后端记录归一化：根据 resultType 决定渲染哪种内容
+// - math: 用 KaTeX 渲染 latexResult/latex
+// - chem: 直接保留 svgResult/svg 字符串，模板里 v-html 渲染
+// 同时兼容旧记录（没有 resultType 时默认按 math 处理，latex 为空则视为无内容）
+function normalizeItem(item) {
+  const type = item.resultType || item.type || 'math'
+  const isChem = type === 'chem'
+  const rawLatex = item.latexResult ?? item.latex ?? ''
+  const rawSvg = item.svgResult ?? item.svg ?? ''
+  return {
+    ...item,
+    resultType: isChem ? 'chem' : 'math',
+    latex: isChem ? '' : rawLatex,
+    svg: isChem ? rawSvg : '',
+    latexHtml: (!isChem && rawLatex) ? renderLatexToString(rawLatex) : '',
+    imageUrl: resolveImageUrl(item.imageUrl || item.image || item.imagePath || item.path || ''),
+  }
+}
+
+// 后端 size 上限
+const MAX_SIZE = 50
+function clampSize(s) {
+  const n = Number(s)
+  if (!Number.isFinite(n) || n < 1) return 10
+  return Math.min(n, MAX_SIZE)
+}
+
 // ============ 加载历史 ============
+// 后端返回格式：PageResult<T> { list, total, page, size }（外层 Result 已被 request 拦截器剥掉）
+// API 参数名：page（默认 1） / size（默认 10，最大 50）
 async function loadList() {
   loading.value = true
   try {
-    const data = await getHistoryList(pageNum.value, pageSize.value)
-    if (!data) {
-      list.value = []
-      total.value = 0
-      return
+    const size = clampSize(pageSize.value)
+    const data = await getHistoryList(pageNum.value, size)
+    const pageArr = (data && Array.isArray(data.list)) ? data.list : []
+    list.value = pageArr.map(normalizeItem)
+    total.value = Number(data && data.total != null ? data.total : list.value.length)
+    // 矫正越界页码
+    const maxP = Math.max(1, Math.ceil(total.value / size))
+    if (pageNum.value > maxP) {
+      pageNum.value = maxP
+      // 重新拉最后一页
+      const d2 = await getHistoryList(pageNum.value, size)
+      const arr2 = (d2 && Array.isArray(d2.list)) ? d2.list : []
+      list.value = arr2.map(normalizeItem)
+      total.value = Number(d2 && d2.total != null ? d2.total : list.value.length)
     }
-    if (Array.isArray(data)) {
-      list.value = data.map((item) => {
-        const raw = item.latexResult ?? item.latex ?? ''
-        return { ...item, latex: raw, latexHtml: renderLatexToString(raw) }
-      })
-      total.value = data.length
-    } else if (data.list != null) {
-      list.value = (data.list || []).map((item) => {
-        const raw = item.latexResult ?? item.latex ?? ''
-        return { ...item, latex: raw, latexHtml: renderLatexToString(raw) }
-      })
-      total.value = data.total ?? list.value.length
-    } else {
-      list.value = []
-      total.value = 0
-    }
-  } catch (e) {
+  } catch {
     list.value = []
     total.value = 0
   } finally {
@@ -117,13 +150,68 @@ async function handleFeedback(item, fb) {
   }
 }
 
-// ============ 复制 LaTeX ============
-async function copyLatex(latex) {
+// ============ 重新识别 ============
+const reRecognizing = ref(new Set())
+
+function isReRecognizing(id) {
+  return reRecognizing.value.has(id)
+}
+
+async function handleReRecognize(item) {
+  if (!item.imageUrl) {
+    ElMessage({ message: '原图不可用，无法重新识别', type: 'warning', duration: 2000, offset: 60 })
+    return
+  }
+  reRecognizing.value.add(item.id)
   try {
-    await navigator.clipboard.writeText(latex)
-    ElMessage({ message: 'LaTeX 已复制到剪贴板', type: 'success', duration: 1500, offset: 60 })
+    const res = await fetch(item.imageUrl)
+    if (!res.ok) throw new Error('原图加载失败')
+    const blob = await res.blob()
+    const ext = (item.imageUrl.match(/\.(jpe?g|png|webp)$/i)?.[1] || 'jpg').toLowerCase()
+    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+    const file = new File([blob], `recognize.${ext}`, { type: mime })
+    recStore.reset()
+    recStore.setFile(file)
+    recStore.pendingAutoRecognize = true
+    router.push('/recognize')
   } catch {
-    ElMessage({ message: '复制失败，请手动复制', type: 'error', duration: 1500, offset: 60 })
+    ElMessage({ message: '原图加载失败，无法重新识别', type: 'error', duration: 2000, offset: 60 })
+  } finally {
+    reRecognizing.value.delete(item.id)
+  }
+}
+
+// ============ 复制 LaTeX ============
+function fallbackCopy(text) {
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.left = '-9999px'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+function copyLatex(latex) {
+  const onSuccess = () => {
+    ElMessage({ message: 'LaTeX 已复制到剪贴板', type: 'success', duration: 1500, offset: 60 })
+  }
+  const onFail = () => {
+    ElMessage({ message: '复制失败，请手动选中复制', type: 'warning', duration: 2000, offset: 60 })
+  }
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(latex).then(onSuccess).catch(() => {
+      fallbackCopy(latex) ? onSuccess() : onFail()
+    })
+  } else {
+    fallbackCopy(latex) ? onSuccess() : onFail()
   }
 }
 
@@ -139,11 +227,17 @@ function formatTime(t) {
 
 // ============ 分页 ============
 function onPageChange(p) {
+  const size = clampSize(pageSize.value)
+  const maxPage = Math.max(1, Math.ceil(total.value / size))
+  if (p < 1) p = 1
+  if (p > maxPage) p = maxPage
+  if (p === pageNum.value) return
   pageNum.value = p
   loadList()
 }
 function onPageSizeChange(s) {
-  pageSize.value = s
+  const nextSize = clampSize(s)
+  if (nextSize !== pageSize.value) pageSize.value = nextSize
   pageNum.value = 1
   loadList()
 }
@@ -220,7 +314,7 @@ onMounted(() => {
                 <th style="width:180px;text-align:center">公式预览</th>
                 <th style="width:90px">LaTeX 源码</th>
                 <th style="width:110px;text-align:center">置信度</th>
-                <th style="width:180px;text-align:center">反馈状态</th>
+                <th style="width:240px;text-align:center">反馈状态</th>
                 <th style="width:150px;text-align:center">识别时间</th>
               </tr>
             </thead>
@@ -229,7 +323,12 @@ onMounted(() => {
                 <!-- 缩略图 -->
                 <td style="text-align:center">
                   <div v-if="item.imageUrl" class="thumb-wrap" @click="previewImage(item.imageUrl)">
-                    <img :src="item.imageUrl" class="thumb" alt="原图" />
+                    <img
+                      :src="item.imageUrl"
+                      class="thumb"
+                      alt="原图"
+                      @error="onThumbError($event, item)"
+                    />
                     <div class="thumb-mask">
                       <el-icon><Picture /></el-icon>
                       <span>查看</span>
@@ -238,24 +337,52 @@ onMounted(() => {
                   <span v-else class="placeholder">-</span>
                 </td>
 
-                <!-- LaTeX 渲染 -->
+                <!-- 结果预览：math=KaTeX / chem=SVG -->
                 <td style="text-align:center">
+                  <!-- 化学模式：直接 v-html 渲染 SVG（透明背景，RDKit 输出） -->
                   <div
-                    v-if="item.latexHtml"
+                    v-if="item.resultType === 'chem' && item.svg"
+                    class="chem-cell"
+                    v-html="item.svg"
+                  ></div>
+                  <!-- 数学模式：KaTeX 预渲染 HTML -->
+                  <div
+                    v-else-if="item.latexHtml"
                     class="latex-cell"
                     v-html="item.latexHtml"
                   ></div>
                   <span v-else class="placeholder">-</span>
                 </td>
 
-                <!-- LaTeX 源码 -->
+                <!-- 源码：math=LaTeX / chem=SMILES -->
                 <td>
-                  <div v-if="item.latex" class="latex-source-wrap">
-                    <code class="latex-source" :title="item.latex">{{ item.latex }}</code>
-                    <button class="copy-btn" @click="copyLatex(item.latex)">
+                  <!-- 化学模式：显示并复制 SMILES -->
+                  <div
+                    v-if="item.resultType === 'chem' && (item.ssmlResult || item.ssml || item.smiles)"
+                    class="latex-source-wrap clickable"
+                    @click="copyLatex(item.ssmlResult || item.ssml || item.smiles)"
+                  >
+                    <div class="latex-source-scroll">
+                      <code class="latex-source">{{ item.ssmlResult || item.ssml || item.smiles }}</code>
+                    </div>
+                    <div class="copy-tooltip">
                       <el-icon><DocumentCopy /></el-icon>
-                      <span>复制</span>
-                    </button>
+                      <span>点击复制 SMILES</span>
+                    </div>
+                  </div>
+                  <!-- 数学模式：显示并复制 LaTeX -->
+                  <div
+                    v-else-if="item.latex"
+                    class="latex-source-wrap clickable"
+                    @click="copyLatex(item.latex)"
+                  >
+                    <div class="latex-source-scroll">
+                      <code class="latex-source">{{ item.latex }}</code>
+                    </div>
+                    <div class="copy-tooltip">
+                      <el-icon><DocumentCopy /></el-icon>
+                      <span>点击复制</span>
+                    </div>
                   </div>
                   <span v-else class="placeholder">-</span>
                 </td>
@@ -275,33 +402,43 @@ onMounted(() => {
 
                 <!-- 反馈 -->
                 <td style="text-align:center">
-                  <div v-if="!item.feedback || item.feedback === 0" class="feedback-actions-cell">
-                    <button
-                      class="fb-btn correct"
-                      :disabled="isFeedbackSubmitting(item.id)"
-                      @click="handleFeedback(item, 1)"
-                    >
+                  <div class="feedback-cell">
+                    <div v-if="!item.feedback || item.feedback === 0" class="feedback-actions-cell">
+                      <button
+                        class="fb-btn correct"
+                        :disabled="isFeedbackSubmitting(item.id)"
+                        @click="handleFeedback(item, 1)"
+                      >
+                        <el-icon><Check /></el-icon>
+                        <span>正确</span>
+                      </button>
+                      <button
+                        class="fb-btn incorrect"
+                        :disabled="isFeedbackSubmitting(item.id)"
+                        @click="handleFeedback(item, 2)"
+                      >
+                        <el-icon><Close /></el-icon>
+                        <span>错误</span>
+                      </button>
+                    </div>
+                    <span v-else-if="item.feedback === 1" class="fb-tag correct">
                       <el-icon><Check /></el-icon>
-                      <span>正确</span>
-                    </button>
-                    <button
-                      class="fb-btn incorrect"
-                      :disabled="isFeedbackSubmitting(item.id)"
-                      @click="handleFeedback(item, 2)"
-                    >
+                      已标记正确
+                    </span>
+                    <span v-else-if="item.feedback === 2" class="fb-tag incorrect">
                       <el-icon><Close /></el-icon>
-                      <span>错误</span>
+                      已标记错误
+                    </span>
+                    <span v-else class="placeholder">-</span>
+                    <button
+                      class="fb-btn re-recognize"
+                      :disabled="isReRecognizing(item.id)"
+                      @click="handleReRecognize(item)"
+                    >
+                      <el-icon><RefreshRight /></el-icon>
+                      <span>重新识别</span>
                     </button>
                   </div>
-                  <span v-else-if="item.feedback === 1" class="fb-tag correct">
-                    <el-icon><Check /></el-icon>
-                    已标记正确
-                  </span>
-                  <span v-else-if="item.feedback === 2" class="fb-tag incorrect">
-                    <el-icon><Close /></el-icon>
-                    已标记错误
-                  </span>
-                  <span v-else class="placeholder">-</span>
                 </td>
 
                 <!-- 时间 -->
@@ -610,6 +747,23 @@ onMounted(() => {
   line-height: 1.4;
 }
 
+/* ============ 化学结构图（SVG）渲染 ============ */
+.chem-cell {
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 100%;
+  padding: 6px 8px;
+}
+
+.chem-cell :deep(svg) {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
 .latex-cell :deep(.katex) {
   display: inline-block;
   max-width: 100%;
@@ -619,54 +773,103 @@ onMounted(() => {
 
 /* ============ 源码 ============ */
 .latex-source-wrap {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  position: relative;
+  width: 100%;
+}
+
+.latex-source-wrap.clickable {
+  cursor: pointer;
+}
+
+.latex-source-wrap.clickable:hover .latex-source-scroll {
+  border-color: rgba(102, 126, 234, 0.3);
+  background: rgba(15, 15, 26, 0.9);
+}
+
+.latex-source-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 10px;
+  background: #0f0f1a;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: all 0.25s;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(102, 126, 234, 0.4) transparent;
+}
+
+.latex-source-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.latex-source-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.latex-source-scroll::-webkit-scrollbar-thumb {
+  background: rgba(102, 126, 234, 0.3);
+  border-radius: 3px;
+}
+
+.latex-source-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(102, 126, 234, 0.55);
 }
 
 .latex-source {
-  flex: 1;
-  min-width: 0;
   display: inline-block;
-  padding: 6px 12px;
-  background: #0f0f1a;
+  min-width: 100%;
   color: #a6accd;
-  border-radius: 8px;
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 12px;
   line-height: 1.6;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  user-select: all;
 }
 
-.copy-btn {
+/* 悬浮复制提示气泡 */
+.copy-tooltip {
+  position: absolute;
+  left: 50%;
+  top: -4px;
+  transform: translate(-50%, -100%) scale(0.9);
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 5px 12px;
-  border-radius: 8px;
+  padding: 6px 12px;
+  background: rgba(15, 15, 26, 0.95);
+  color: rgba(255, 255, 255, 0.85);
   font-size: 12px;
   font-weight: 500;
-  cursor: pointer;
-  transition: all 0.3s;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.4);
-  flex-shrink: 0;
-  font-family: inherit;
+  border-radius: 8px;
+  border: 1px solid rgba(102, 126, 234, 0.35);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  white-space: nowrap;
+  z-index: 10;
 }
 
-.copy-btn:hover {
-  background: rgba(102, 126, 234, 0.1);
-  border-color: rgba(102, 126, 234, 0.3);
+.copy-tooltip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 5px solid rgba(102, 126, 234, 0.35);
+}
+
+.copy-tooltip .el-icon {
+  font-size: 13px;
   color: #a78bfa;
 }
 
-.copy-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.latex-source-wrap.clickable:hover .copy-tooltip {
+  opacity: 1;
+  transform: translate(-50%, -100%) scale(1);
 }
 
 /* ============ 置信度 ============ */
@@ -693,6 +896,13 @@ onMounted(() => {
 }
 
 /* ============ 反馈 ============ */
+.feedback-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
 .feedback-actions-cell {
   display: flex;
   gap: 8px;
@@ -732,6 +942,16 @@ onMounted(() => {
 .fb-btn.incorrect:hover {
   background: rgba(239, 68, 68, 0.1);
   border-color: rgba(239, 68, 68, 0.5);
+}
+
+.fb-btn.re-recognize {
+  border-color: rgba(102, 126, 234, 0.3);
+  color: #a78bfa;
+}
+
+.fb-btn.re-recognize:hover {
+  background: rgba(102, 126, 234, 0.1);
+  border-color: rgba(102, 126, 234, 0.5);
 }
 
 .fb-btn:disabled {

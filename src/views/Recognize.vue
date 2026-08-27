@@ -2,12 +2,23 @@
 import { ref, computed, onMounted, watch, nextTick, toRefs } from 'vue'
 import { useRecognizeStore } from '@/stores/recognize'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { UploadFilled, DocumentCopy, Check, Close, Refresh, Picture, ArrowDown } from '@element-plus/icons-vue'
+import { UploadFilled, DocumentCopy, Check, Close, Refresh, Picture, ArrowDown, Sort } from '@element-plus/icons-vue'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 
 const recStore = useRecognizeStore()
-const { status, selectedFile, previewUrl, result, feedbackGiven, feedbackType } = toRefs(recStore)
+const { status, selectedFile, previewUrl, result, feedbackGiven, feedbackType, mode } = toRefs(recStore)
+
+// ============ 识别模式 ============
+const modeLabel = computed(() => (mode.value === 'chem' ? '化学公式' : '数学公式'))
+function toggleMode() {
+  // idle / error / success 状态下都可以切换，识别中不能切
+  if (status.value === 'uploading' || status.value === 'recognizing') {
+    ElMessage({ message: '识别中，无法切换模式', type: 'warning', duration: 1500, offset: 60, showClose: true })
+    return
+  }
+  recStore.setMode(mode.value === 'math' ? 'chem' : 'math')
+}
 
 // ============ 置信度提示逻辑 ============
 const confidenceTips = [
@@ -90,22 +101,39 @@ async function handleRecognize() {
   await recStore.startRecognize()
 }
 
-// ============ KaTeX 渲染 ============
-const latexRenderRef = ref(null)
+// ============ 结果渲染 ============
+const resultRenderRef = ref(null)
 
-function renderLatex() {
-  const latex = result.value?.latex
-  if (!latex || !latexRenderRef.value) return
+function renderResult() {
+  if (!result.value || !resultRenderRef.value) return
+  // 化学模式：直接 SVG 字符串 v-html 渲染（在模板里处理），这里只处理数学模式
+  const r = result.value
+  // 兼容历史记录：resultType 或 type 任一能识别
+  const type = r.type || r.resultType || 'math'
+  if (type === 'chem') {
+    // SVG 走 v-html，无需在这里 JS 渲染
+    return
+  }
+  // 数学模式：KaTeX 渲染 latex
+  const latex = r.latex
+  if (!latex) return
   try {
-    katex.render(latex, latexRenderRef.value, {
+    katex.render(latex, resultRenderRef.value, {
       throwOnError: false,
       displayMode: true,
       errorColor: '#f87171',
     })
   } catch {
-    latexRenderRef.value.textContent = latex
+    resultRenderRef.value.textContent = latex
   }
 }
+
+// 当前结果是否为化学模式
+const isChemResult = computed(() => {
+  const r = result.value
+  if (!r) return false
+  return (r.type || r.resultType) === 'chem'
+})
 
 // ============ 低置信度警告 ============
 let lowConfWarnedForId = null
@@ -118,18 +146,48 @@ function showLowConfidenceWarning() {
     `当前置信度仅为 ${pct}%，请仔细核对识别出的公式内容。`,
     '⚠️ 识别结果可能不准确',
     { confirmButtonText: '使用此结果', cancelButtonText: '重新识别', type: 'warning' }
-  ).then(() => {}).catch(() => { resetAll() })
+  ).then(() => {}).catch(() => {})
 }
 
-// ============ 复制 LaTeX ============
-async function copyLatex() {
-  const latex = result.value?.latex
-  if (!latex) return
-  try {
-    await navigator.clipboard.writeText(latex)
-    ElMessage({ message: 'LaTeX 公式已复制到剪贴板', type: 'success', duration: 2000, offset: 60, showClose: true })
-  } catch {
+// ============ 复制结果 ============
+async function copyResult() {
+  if (!result.value) return
+  // 化学模式复制 SMILES，数学模式复制 LaTeX
+  const copyText = isChemResult.value
+    ? (result.value.ssml || result.value.smiles || result.value.ssmlResult || '')
+    : (result.value.latex || result.value.latexResult || '')
+  if (!copyText) {
+    ElMessage({ message: '没有可复制的内容', type: 'info', duration: 1500, offset: 60, showClose: true })
+    return
+  }
+  function onSuccess(label) {
+    ElMessage({ message: `${label} 已复制到剪贴板`, type: 'success', duration: 2000, offset: 60, showClose: true })
+  }
+  function onFail() {
     ElMessage({ message: '复制失败，请手动复制', type: 'error', duration: 2000, offset: 60, showClose: true })
+  }
+  // HTTP 内网穿透环境下 navigator.clipboard 可能不可用，兜底 execCommand
+  function fallback(t) {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = t
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch { return false }
+  }
+  const label = isChemResult.value ? 'SMILES' : 'LaTeX 公式'
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(copyText).then(() => onSuccess(label)).catch(() => {
+      fallback(copyText) ? onSuccess(label) : onFail()
+    })
+  } else {
+    fallback(copyText) ? onSuccess(label) : onFail()
   }
 }
 
@@ -138,12 +196,7 @@ async function markCorrect() { await recStore.markFeedback(1) }
 async function markIncorrect() { await recStore.markFeedback(2) }
 
 // ============ 重置 ============
-function resetResult() {
-  if (!result.value) return
-  result.value = { id: null, latex: '', confidence: null, imageUrl: '' }
-  feedbackGiven.value = false
-}
-
+// resetAll：清空所有数据（图片+结果），仅在用户点"重新选择"时调用
 function resetAll() {
   recStore.reset()
   lowConfWarnedForId = null
@@ -155,8 +208,13 @@ let historyToastForId = null
 
 onMounted(() => {
   lastStatus = status.value
-  if (status.value === 'success' && result.value?.latex) {
-    nextTick(() => renderLatex())
+  if (status.value === 'success' && result.value) {
+    nextTick(() => renderResult())
+  }
+  // 从历史记录跳转过来，自动对原图重新识别
+  if (recStore.pendingAutoRecognize && selectedFile.value) {
+    recStore.pendingAutoRecognize = false
+    handleRecognize()
   }
 })
 
@@ -170,7 +228,7 @@ watch(
         treatedResultIds.add(newId)
         ElMessage({ message: '识别完成！', type: 'success', duration: 1500, offset: 60, showClose: true })
         await nextTick()
-        renderLatex()
+        renderResult()
         if (result.value?.confidence != null && result.value.confidence < 0.70) {
           showLowConfidenceWarning()
         }
@@ -182,7 +240,7 @@ watch(
         }
       } else {
         await nextTick()
-        renderLatex()
+        renderResult()
       }
     }
   },
@@ -231,6 +289,21 @@ watch(
             style="display: none"
             @change="onFileChange"
           />
+
+          <!-- 模式切换（上传前后始终显示） -->
+          <div class="mode-switch-wrap">
+            <button
+              class="mode-switch-btn"
+              :class="{ 'is-chem': mode === 'chem' }"
+              :disabled="status === 'uploading' || status === 'recognizing'"
+              @click="toggleMode"
+              :title="mode === 'chem' ? '点击切换到数学公式' : '点击切换到化学公式'"
+            >
+              <el-icon class="mode-switch-icon"><Sort /></el-icon>
+              <span class="mode-switch-label">当前:</span>
+              <span class="mode-switch-current">{{ modeLabel }}</span>
+            </button>
+          </div>
 
           <!-- 上传区域 -->
           <div
@@ -319,22 +392,31 @@ watch(
               </div>
             </div>
 
-            <!-- LaTeX 渲染 -->
+            <!-- 结果渲染：数学模式 KaTeX 渲染 latex / 化学模式 v-html 渲染 svg -->
             <div class="latex-section">
-              <div class="section-label" style="text-align:center;margin-bottom:12px">LaTeX 公式预览</div>
-              <div ref="latexRenderRef" class="latex-render"></div>
+              <div class="section-label" style="text-align:center;margin-bottom:12px">
+                {{ isChemResult ? '化学结构图' : 'LaTeX 公式预览' }}
+              </div>
+              <!-- 化学模式：直接渲染 SVG 字符串（透明背景） -->
+              <div
+                v-if="isChemResult"
+                class="chem-svg-render"
+                v-html="result?.svg || result?.svgResult || ''"
+              ></div>
+              <!-- 数学模式：KaTeX 渲染 latex -->
+              <div v-else ref="resultRenderRef" class="latex-render"></div>
             </div>
 
-            <!-- LaTeX 源码 -->
+            <!-- 源码：math=LaTeX / chem=SMILES -->
             <div class="latex-source">
               <div class="source-header">
-                <span class="source-label">LaTeX 源码</span>
-                <button class="copy-btn" @click="copyLatex">
+                <span class="source-label">{{ isChemResult ? 'SMILES 源码' : 'LaTeX 源码' }}</span>
+                <button class="copy-btn" @click="copyResult">
                   <el-icon><DocumentCopy /></el-icon>
                   <span>复制</span>
                 </button>
               </div>
-              <pre class="latex-code">{{ result?.latex }}</pre>
+              <pre class="latex-code">{{ isChemResult ? (result?.ssml || result?.smiles || result?.ssmlResult || '') : (result?.latex || result?.latexResult || '') }}</pre>
             </div>
 
             <!-- 反馈 -->
@@ -366,7 +448,7 @@ watch(
               <el-icon class="error-icon"><Close /></el-icon>
             </div>
             <p class="error-text">{{ statusText }}</p>
-            <button class="btn btn-primary" @click="resetAll">重新上传</button>
+            <button class="btn btn-primary" @click="handleRecognize">重新识别</button>
           </div>
         </div>
       </div>
@@ -630,6 +712,75 @@ watch(
   display: block;
 }
 
+/* ============ 模式切换按钮 ============ */
+.mode-switch-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.mode-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  border: 1px solid rgba(102, 126, 234, 0.4);
+  background: rgba(102, 126, 234, 0.08);
+  color: #818cf8;
+  font-family: inherit;
+  position: relative;
+  overflow: hidden;
+}
+
+.mode-switch-btn:hover {
+  background: rgba(102, 126, 234, 0.15);
+  border-color: rgba(102, 126, 234, 0.6);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(102, 126, 234, 0.2);
+}
+
+.mode-switch-btn.is-chem {
+  border-color: rgba(167, 139, 250, 0.45);
+  background: rgba(167, 139, 250, 0.1);
+  color: #c4b5fd;
+}
+
+.mode-switch-btn.is-chem:hover {
+  background: rgba(167, 139, 250, 0.18);
+  border-color: rgba(167, 139, 250, 0.65);
+  box-shadow: 0 4px 14px rgba(167, 139, 250, 0.25);
+}
+
+.mode-switch-icon {
+  font-size: 14px;
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.mode-switch-btn:hover .mode-switch-icon {
+  transform: rotate(180deg);
+}
+
+.mode-switch-label {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 13px;
+}
+
+.mode-switch-current {
+  font-weight: 600;
+}
+
+.mode-switch-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
 .preview-actions {
   display: flex;
   gap: 12px;
@@ -853,6 +1004,22 @@ watch(
   justify-content: center;
   overflow-x: auto;
   color: #fff;
+}
+
+/* 化学结构图渲染区（SVG 透明背景，居中显示） */
+.chem-svg-render {
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-x: auto;
+  padding: 8px;
+}
+
+.chem-svg-render :deep(svg) {
+  max-width: 100%;
+  height: auto;
+  display: block;
 }
 
 /* LaTeX 源码 */

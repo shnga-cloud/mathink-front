@@ -16,6 +16,7 @@ export const useHandwriteStore = defineStore('handwrite', {
     feedbackGiven: false,
     feedbackType: 0,       // 0 未反馈，1 正确，2 错误
     errorMsg: null,
+    mode: 'math',          // 识别模式：'math' | 'chem'，默认数学公式
   }),
 
   actions: {
@@ -28,6 +29,7 @@ export const useHandwriteStore = defineStore('handwrite', {
       this.feedbackGiven = false
       this.feedbackType = 0
       this.errorMsg = null
+      // 注意：mode 不重置，保留用户上次选择
     },
 
     setCanvasData(dataUrl) {
@@ -39,11 +41,19 @@ export const useHandwriteStore = defineStore('handwrite', {
       this.penSize = size
     },
 
-    async startRecognize(file) {
+    setMode(mode) {
+      if (mode === 'math' || mode === 'chem') {
+        this.mode = mode
+      }
+    },
+
+    async startRecognize(file, mode) {
       if (!file) {
         ElMessage.error({ message: '画板无内容', offset: 60, showClose: true })
         return null
       }
+      const useMode = mode || this.mode || 'math'
+      if (mode) this.mode = mode
 
       this.status = 'recognizing'
       this.result = null
@@ -52,7 +62,8 @@ export const useHandwriteStore = defineStore('handwrite', {
       this.errorMsg = null
 
       try {
-        const data = await recognizeUpload(file)
+        const data = await recognizeUpload(file, useMode)
+        // 后端数学模式返回 latexResult / latex 统一映射
         if (data && data.latexResult != null && data.latex == null) {
           data.latex = data.latexResult
         }

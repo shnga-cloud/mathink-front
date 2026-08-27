@@ -2,13 +2,18 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import router from '@/router'
+import { setBackendBase } from '@/utils/imageUrl'
 
 const request = axios.create({
-  baseURL: 'http://xg-2.frp.one:65366',
+  // baseURL: 'http://xg-2.frp.one:65366',
+  baseURL: 'http://localhost:8080',
   headers: {
     'Content-Type': 'application/json',
   },
 })
+
+// 将后端 baseURL 同步给图片 URL 解析工具
+setBackendBase(request.defaults.baseURL)
 
 // 请求拦截器
 request.interceptors.request.use(

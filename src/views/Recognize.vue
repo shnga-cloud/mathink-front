@@ -43,7 +43,7 @@ const confidencePercent = computed(() => {
 const statusText = computed(() => {
   switch (status.value) {
     case 'uploading': return '正在上传图片...'
-    case 'recognizing': return 'AI 正在识别公式，预计需要 3-10 秒'
+    case 'recognizing': return 'AI 正在识别公式，请耐心等待'
     case 'success': return `识别完成！置信度 ${confidencePercent.value}`
     case 'error': return '识别失败，请重新上传或换一张图片'
     default: return ''
@@ -154,7 +154,7 @@ async function copyResult() {
   if (!result.value) return
   // 化学模式复制 SMILES，数学模式复制 LaTeX
   const copyText = isChemResult.value
-    ? (result.value.ssml || result.value.smiles || result.value.ssmlResult || '')
+    ? (result.value.smiles || result.value.smilesResult || '')
     : (result.value.latex || result.value.latexResult || '')
   if (!copyText) {
     ElMessage({ message: '没有可复制的内容', type: 'info', duration: 1500, offset: 60, showClose: true })
@@ -416,7 +416,7 @@ watch(
                   <span>复制</span>
                 </button>
               </div>
-              <pre class="latex-code">{{ isChemResult ? (result?.ssml || result?.smiles || result?.ssmlResult || '') : (result?.latex || result?.latexResult || '') }}</pre>
+              <pre class="latex-code">{{ isChemResult ? (result?.smiles || result?.smilesResult || '') : (result?.latex || result?.latexResult || '') }}</pre>
             </div>
 
             <!-- 反馈 -->

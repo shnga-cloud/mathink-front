@@ -171,6 +171,7 @@ async function handleReRecognize(item) {
     const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
     const file = new File([blob], `recognize.${ext}`, { type: mime })
     recStore.reset()
+    recStore.setMode(item.resultType === 'chem' ? 'chem' : 'math')
     recStore.setFile(file)
     recStore.pendingAutoRecognize = true
     router.push('/recognize')
@@ -312,7 +313,7 @@ onMounted(() => {
               <tr>
                 <th style="width:120px;text-align:center">原图</th>
                 <th style="width:180px;text-align:center">公式预览</th>
-                <th style="width:90px">LaTeX 源码</th>
+                <th style="width:90px">LaTeX/SMILES</th>
                 <th style="width:110px;text-align:center">置信度</th>
                 <th style="width:240px;text-align:center">反馈状态</th>
                 <th style="width:150px;text-align:center">识别时间</th>
@@ -358,12 +359,12 @@ onMounted(() => {
                 <td>
                   <!-- 化学模式：显示并复制 SMILES -->
                   <div
-                    v-if="item.resultType === 'chem' && (item.ssmlResult || item.ssml || item.smiles)"
+                    v-if="item.resultType === 'chem' && (item.smilesResult || item.smiles)"
                     class="latex-source-wrap clickable"
-                    @click="copyLatex(item.ssmlResult || item.ssml || item.smiles)"
+                    @click="copyLatex(item.smilesResult || item.smiles)"
                   >
                     <div class="latex-source-scroll">
-                      <code class="latex-source">{{ item.ssmlResult || item.ssml || item.smiles }}</code>
+                      <code class="latex-source">{{ item.smilesResult || item.smiles }}</code>
                     </div>
                     <div class="copy-tooltip">
                       <el-icon><DocumentCopy /></el-icon>
@@ -381,7 +382,7 @@ onMounted(() => {
                     </div>
                     <div class="copy-tooltip">
                       <el-icon><DocumentCopy /></el-icon>
-                      <span>点击复制</span>
+                      <span>点击复制 LaTeX</span>
                     </div>
                   </div>
                   <span v-else class="placeholder">-</span>

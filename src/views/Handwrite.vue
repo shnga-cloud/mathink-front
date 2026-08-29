@@ -208,7 +208,7 @@ const confidencePercent = computed(() => {
 
 const statusText = computed(() => {
   switch (status.value) {
-    case 'recognizing': return 'AI 正在识别手写内容，预计需要 3-10 秒'
+    case 'recognizing': return 'AI 正在识别手写内容，请耐心等待'
     case 'success': return `识别完成！置信度 ${confidencePercent.value}`
     case 'error': return '识别失败，请重新书写或换一个公式'
     default: return ''
@@ -287,7 +287,7 @@ async function copyResult() {
   if (!result.value) return
   // 化学模式复制 SMILES，数学模式复制 LaTeX
   const copyText = isChemResult.value
-    ? (result.value.ssml || result.value.smiles || result.value.ssmlResult || '')
+    ? (result.value.smiles || result.value.smilesResult || '')
     : (result.value.latex || result.value.latexResult || '')
   if (!copyText) {
     ElMessage({ message: '没有可复制的内容', type: 'info', duration: 1500, offset: 60 })
@@ -601,7 +601,7 @@ watch(
                   <span>复制</span>
                 </button>
               </div>
-              <pre class="latex-code">{{ isChemResult ? (result?.ssml || result?.smiles || result?.ssmlResult || '') : (result?.latex || result?.latexResult || '') }}</pre>
+              <pre class="latex-code">{{ isChemResult ? (result?.smiles || result?.smilesResult || '') : (result?.latex || result?.latexResult || '') }}</pre>
             </div>
 
             <!-- 反馈 -->
@@ -939,19 +939,19 @@ watch(
   font-weight: 500;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-  border: 1px solid rgba(139, 92, 246, 0.4);
-  background: rgba(139, 92, 246, 0.08);
-  color: #a78bfa;
+  border: 1px solid rgba(102, 126, 234, 0.4);
+  background: rgba(102, 126, 234, 0.08);
+  color: #818cf8;
   font-family: inherit;
   position: relative;
   overflow: hidden;
 }
 
 .mode-switch-btn:hover {
-  background: rgba(139, 92, 246, 0.15);
-  border-color: rgba(139, 92, 246, 0.6);
+  background: rgba(102, 126, 234, 0.15);
+  border-color: rgba(102, 126, 234, 0.6);
   transform: translateY(-1px);
-  box-shadow: 0 4px 14px rgba(139, 92, 246, 0.2);
+  box-shadow: 0 4px 14px rgba(102, 126, 234, 0.2);
 }
 
 .mode-switch-btn.is-chem {

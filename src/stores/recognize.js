@@ -11,7 +11,7 @@ export const useRecognizeStore = defineStore('recognize', {
     status: 'idle',
     selectedFile: null,      // File 对象（仅用于再次点击识别时可选；切换路由后 File 对象可能丢失，主要靠 previewUrl + result）
     previewUrl: null,        // 图片预览 URL（ObjectURL，切路由不会自动销毁）
-    result: null,            // { id, type, latex, svg, ssml, confidence, imageUrl, ... }
+    result: null,            // { id, type, latex, svg, smiles, confidence, imageUrl, ... }
     feedbackGiven: false,    // 是否已反馈
     feedbackType: 0,         // 0 未反馈，1 正确，2 错误
     errorMsg: null,          // 错误信息

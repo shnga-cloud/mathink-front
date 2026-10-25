@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -119,7 +119,14 @@ async function handleBindEmail() {
 }
 
 onMounted(() => {
-  if (route.path === '/') loadStats()
+  // 挂载时加载一次，保证导航栏用户下拉里的统计在任何页面都有数据
+  loadStats()
+})
+
+// 每次回到首页都重新拉取统计，识别/反馈/删除历史后数据保持最新
+// （导航栏下拉与首页仪表盘共用同一 stats 响应式对象，会同步更新）
+watch(() => route.path, (p) => {
+  if (p === '/') loadStats()
 })
 </script>
 
@@ -424,54 +431,9 @@ onMounted(() => {
   overflow-x: hidden;
 }
 
-.bg-gradient {
-  position: fixed;
-  inset: 0;
-  background:
-    radial-gradient(ellipse at 15% 20%, rgba(102, 126, 234, 0.18) 0%, transparent 55%),
-    radial-gradient(ellipse at 85% 80%, rgba(118, 75, 162, 0.12) 0%, transparent 55%),
-    radial-gradient(ellipse at 50% 50%, rgba(102, 126, 234, 0.05) 0%, transparent 60%),
-    linear-gradient(180deg, #0a0a14 0%, #0e0e1c 50%, #0b0b14 100%);
-  pointer-events: none;
-  z-index: 0;
-}
+/* 背景层（bg-gradient / grid-overlay / particles / particle）公共样式已抽取到 App.vue */
 
-.grid-overlay {
-  position: fixed;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(102, 126, 234, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(102, 126, 234, 0.025) 1px, transparent 1px);
-  background-size: 80px 80px;
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* 浮动粒子 */
-.particles {
-  position: fixed;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.particle {
-  position: absolute;
-  border-radius: 50%;
-  background: rgba(102, 126, 234, 0.35);
-  filter: blur(1px);
-  animation: floatUp linear infinite;
-}
-
-@keyframes floatUp {
-  0% { transform: translateY(100vh) scale(0); opacity: 0; }
-  10% { opacity: 1; }
-  90% { opacity: 1; }
-  100% { transform: translateY(-10vh) scale(1); opacity: 0; }
-}
-
-/* 装饰圆环 */
+/* 装饰圆环（本页 fixed 定位覆盖） */
 .deco-circle {
   position: fixed;
   border-radius: 50%;
@@ -479,11 +441,6 @@ onMounted(() => {
   pointer-events: none;
   animation: pulse 4s ease-in-out infinite;
   z-index: 0;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 0.3; transform: scale(1); }
-  50% { opacity: 0.6; transform: scale(1.05); }
 }
 
 /* ============ 顶部导航 ============ */
@@ -968,10 +925,6 @@ onMounted(() => {
   height: 2px;
   background: linear-gradient(90deg, transparent, rgba(102, 126, 234, 0.5), rgba(167, 139, 250, 0.5), transparent);
   border-radius: 2px;
-}
-
-@keyframes cardAppear {
-  to { opacity: 1; transform: translateY(0); }
 }
 
 .welcome-title {

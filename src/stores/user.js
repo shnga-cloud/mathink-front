@@ -2,6 +2,8 @@ import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { login as loginApi, bindEmail as bindEmailApi } from '@/api/user'
+import { useRecognizeStore } from './recognize'
+import { useHandwriteStore } from './handwrite'
 
 export const useUserStore = defineStore(
   'user',
@@ -51,6 +53,15 @@ export const useUserStore = defineStore(
     }
 
     function logout() {
+      // 清理识别会话（含预览 URL 资源），避免下个用户登录后看到上个用户的图片/结果
+      const recStore = useRecognizeStore()
+      const hwStore = useHandwriteStore()
+      recStore.reset()
+      hwStore.reset()
+      // reset() 出于体验考虑会保留 mode，退出登录时彻底重置为默认
+      recStore.mode = 'math'
+      hwStore.mode = 'math'
+
       token.value = ''
       userInfo.value = {
         id: null,

@@ -44,3 +44,11 @@ export function getHistoryList(page = 1, size = 10) {
     params: { page, size },
   })
 }
+
+// 删除一条历史记录
+export function deleteHistory(id) {
+  return request({
+    url: `/recognize/history/${id}`,
+    method: 'delete',
+  })
+}

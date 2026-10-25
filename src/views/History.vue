@@ -1,12 +1,12 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElImageViewer } from 'element-plus'
+import { ElMessage, ElMessageBox, ElImageViewer } from 'element-plus'
 import {
   DocumentCopy, Check, Close, Picture, RefreshRight,
-  DataLine, ArrowLeft, ArrowRight
+  DataLine, ArrowLeft, ArrowRight, Delete
 } from '@element-plus/icons-vue'
-import { getHistoryList, submitFeedback } from '@/api/recognize'
+import { getHistoryList, submitFeedback, deleteHistory } from '@/api/recognize'
 import { resolveImageUrl } from '@/utils/imageUrl'
 import { useRecognizeStore } from '@/stores/recognize'
 import katex from 'katex'
@@ -182,6 +182,39 @@ async function handleReRecognize(item) {
   }
 }
 
+// ============ 删除记录 ============
+const deleting = ref(new Set())
+
+function isDeleting(id) {
+  return deleting.value.has(id)
+}
+
+async function handleDelete(item) {
+  try {
+    await ElMessageBox.confirm('删除后该条识别记录将无法恢复，确定删除吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return // 用户取消
+  }
+  deleting.value.add(item.id)
+  try {
+    await deleteHistory(item.id)
+    ElMessage({ message: '删除成功', type: 'success', duration: 1500, offset: 60 })
+    // 当前页只剩这一条且不是第一页时，删除后回退一页
+    if (list.value.length === 1 && pageNum.value > 1) {
+      pageNum.value -= 1
+    }
+    loadList()
+  } catch {
+    // 请求失败时拦截器已提示
+  } finally {
+    deleting.value.delete(item.id)
+  }
+}
+
 // ============ 复制 LaTeX ============
 function fallbackCopy(text) {
   try {
@@ -317,6 +350,7 @@ onMounted(() => {
                 <th style="width:110px;text-align:center">置信度</th>
                 <th style="width:240px;text-align:center">反馈状态</th>
                 <th style="width:150px;text-align:center">识别时间</th>
+                <th style="width:90px;text-align:center">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -446,6 +480,18 @@ onMounted(() => {
                 <td style="text-align:center">
                   <span class="time-cell">{{ formatTime(item.createdAt || item.createTime || item.time) }}</span>
                 </td>
+
+                <!-- 操作：删除 -->
+                <td style="text-align:center">
+                  <button
+                    class="fb-btn delete"
+                    :disabled="isDeleting(item.id)"
+                    @click="handleDelete(item)"
+                  >
+                    <el-icon><Delete /></el-icon>
+                    <span>删除</span>
+                  </button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -502,57 +548,11 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* ============ 全局背景层 ============ */
 .history-page {
   min-height: 100%;
   background: #0b0b14;
   position: relative;
   overflow-x: hidden;
-}
-
-.bg-gradient {
-  position: fixed;
-  inset: 0;
-  background:
-    radial-gradient(ellipse at 15% 20%, rgba(102, 126, 234, 0.12) 0%, transparent 55%),
-    radial-gradient(ellipse at 85% 80%, rgba(118, 75, 162, 0.08) 0%, transparent 55%),
-    linear-gradient(180deg, #0a0a14 0%, #0e0e1c 50%, #0b0b14 100%);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.grid-overlay {
-  position: fixed;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(102, 126, 234, 0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(102, 126, 234, 0.02) 1px, transparent 1px);
-  background-size: 80px 80px;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.particles {
-  position: fixed;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.particle {
-  position: absolute;
-  border-radius: 50%;
-  background: rgba(102, 126, 234, 0.25);
-  filter: blur(1px);
-  animation: floatUp linear infinite;
-}
-
-@keyframes floatUp {
-  0% { transform: translateY(100vh) scale(0); opacity: 0; }
-  10% { opacity: 1; }
-  90% { opacity: 1; }
-  100% { transform: translateY(-10vh) scale(1); opacity: 0; }
 }
 
 /* ============ 主体 ============ */
@@ -581,10 +581,6 @@ onMounted(() => {
   animation: cardAppear 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   opacity: 0;
   transform: translateY(16px);
-}
-
-@keyframes cardAppear {
-  to { opacity: 1; transform: translateY(0); }
 }
 
 .stat-tag {
@@ -953,6 +949,16 @@ onMounted(() => {
 .fb-btn.re-recognize:hover {
   background: rgba(102, 126, 234, 0.1);
   border-color: rgba(102, 126, 234, 0.5);
+}
+
+.fb-btn.delete {
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #f87171;
+}
+
+.fb-btn.delete:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.5);
 }
 
 .fb-btn:disabled {

@@ -17,6 +17,7 @@ export const useRecognizeStore = defineStore('recognize', {
     errorMsg: null,          // 错误信息
     pendingAutoRecognize: false, // 从历史记录跳转过来时自动触发识别的标志
     mode: 'math',            // 识别模式：'math' | 'chem'，默认数学公式
+    reqSeq: 0,               // 请求代数计数器：中断后递增，旧响应回来直接丢弃
   }),
 
   actions: {
@@ -72,6 +73,9 @@ export const useRecognizeStore = defineStore('recognize', {
       if (file) this.setFile(file)
       if (mode) this.mode = mode
 
+      // 记录本次请求代数，用于丢弃中断/新请求后返回的旧响应
+      const seq = ++this.reqSeq
+
       this.status = 'uploading'
       this.result = null
       this.feedbackGiven = false
@@ -81,6 +85,8 @@ export const useRecognizeStore = defineStore('recognize', {
       try {
         this.status = 'recognizing'
         const data = await recognizeUpload(useFile, useMode)
+        // 已被中断或发起了新请求：丢弃旧响应，不写回任何状态
+        if (seq !== this.reqSeq) return null
         // 后端数学模式返回 latexResult / latex 统一映射
         if (data && data.latexResult != null && data.latex == null) {
           data.latex = data.latexResult
@@ -89,11 +95,27 @@ export const useRecognizeStore = defineStore('recognize', {
         this.status = 'success'
         return data
       } catch (err) {
+        if (seq !== this.reqSeq) return null
         // request 拦截器已经 toast 过错误
         this.status = 'error'
         this.errorMsg = err?.message || '识别失败'
         return null
       }
+    },
+
+    /**
+     * 中断识别：不真正取消 HTTP 请求（后端继续跑，前端不管了），
+     * 只是把页面回到"未发起请求之前"的状态，旧响应回来会被丢弃。
+     * 保留已选图片（selectedFile / previewUrl）和模式，用户可直接换图或重新识别。
+     */
+    abortRecognize() {
+      this.reqSeq++          // 使进行中的请求失效
+      this.status = 'idle'
+      this.result = null
+      this.feedbackGiven = false
+      this.feedbackType = 0
+      this.errorMsg = null
+      this.pendingAutoRecognize = false
     },
 
     /** 反馈识别结果正确性 */
